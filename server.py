@@ -1,135 +1,76 @@
 import os
 import json
-import httpx
+import yfinance as yf
 from mcp.server.fastmcp import FastMCP
 
 # Initialize MCP server
 mcp = FastMCP(
-    "FMP Stock Data",
+    "Stock Data",
     host="0.0.0.0",
     port=int(os.environ.get("PORT", 8000)),
     instructions=(
-        "Financial data tools powered by Financial Modeling Prep. "
-        "Use these tools to screen stocks, get financial statements, key metrics, "
-        "ratios, scores, dividends, and quotes for any publicly traded company globally.\n\n"
-        "For Japanese stocks use exchange 'JPX' or country 'JP'.\n"
-        "For Swiss/Liechtenstein stocks use exchange 'SIX' or country 'CH'.\n"
-        "For Singapore stocks use exchange 'SGX' or country 'SG'.\n"
-        "For UK stocks use exchange 'LSE' or country 'GB'.\n"
-        "For Australian stocks use exchange 'ASX' or country 'AU'.\n"
-        "For German stocks use exchange 'XETRA' or country 'DE'.\n"
-        "For French stocks use exchange 'EURONEXT' or country 'FR'.\n"
+        "Free global stock data tools powered by Yahoo Finance. "
+        "Use these tools to get financial statements, key metrics, "
+        "ratios, dividends, and quotes for any publicly traded company globally.\n\n"
+        "Ticker format examples:\n"
+        "- US: 'AAPL', 'MSFT', 'COP'\n"
+        "- Japan: '8766.T' (Tokio Marine), '4063.T' (Shin-Etsu), '8001.T' (ITOCHU)\n"
+        "- Swiss/Liechtenstein: 'LLBN.SW' (LLB), 'NESN.SW' (Nestle)\n"
+        "- Singapore: 'D05.SI' (DBS), 'O39.SI' (OCBC)\n"
+        "- UK: 'GSK.L' (GSK), 'AZN.L' (AstraZeneca)\n"
+        "- Australia: 'BHP.AX' (BHP), 'CBA.AX' (CommBank)\n"
+        "- Germany: 'SAP.DE' (SAP)\n"
+        "- France: 'SAN.PA' (Sanofi)\n"
+        "- Hong Kong: '0005.HK' (HSBC)\n"
     ),
 )
 
-FMP_API_KEY = os.environ.get("FMP_API_KEY", "")
-FMP_BASE_URL = "https://financialmodelingprep.com/api/v3"
+
+def safe_json(data) -> str:
+    """Convert data to JSON, handling NaN and other non-serializable values."""
+    if data is None:
+        return json.dumps({"error": "No data returned"})
+    if hasattr(data, "to_dict"):
+        data = data.to_dict()
+    return json.dumps(data, indent=2, default=str)
 
 
-async def fmp_get(endpoint: str, params: dict | None = None) -> list | dict:
-    """Make a GET request to the FMP API."""
-    if not FMP_API_KEY:
-        return {"error": "FMP_API_KEY environment variable not set"}
-
-    request_params = params.copy() if params else {}
-    request_params["apikey"] = FMP_API_KEY
-
-    async with httpx.AsyncClient(timeout=30) as client:
-        url = f"{FMP_BASE_URL}/{endpoint}"
-        response = await client.get(url, params=request_params)
-
-        if response.status_code == 401:
-            return {"error": "Invalid FMP API key"}
-        if response.status_code == 403:
-            return {"error": "FMP API access denied - may need upgraded plan"}
-        if response.status_code == 429:
-            return {"error": "FMP API rate limit reached - try again later"}
-
-        response.raise_for_status()
-        return response.json()
+def ticker_info(symbol: str) -> dict:
+    """Get ticker info with error handling."""
+    try:
+        t = yf.Ticker(symbol)
+        info = t.info
+        if not info or info.get("trailingPegRatio") is None and len(info) < 5:
+            return {"error": f"No data found for {symbol}. Check the ticker symbol."}
+        return info
+    except Exception as e:
+        return {"error": f"Failed to fetch data for {symbol}: {str(e)}"}
 
 
 # ---------------------------------------------------------------------------
-# Tool: Search for a company by name
+# Tool: Search for a company ticker
 # ---------------------------------------------------------------------------
 @mcp.tool()
-async def search_company(query: str, limit: int = 10) -> str:
+async def search_company(query: str) -> str:
     """Search for a company by name to find its ticker symbol.
 
-    Useful for finding the correct ticker for international companies.
+    Uses Yahoo Finance search. Returns matching tickers with names and exchanges.
     Example: search 'Tokio Marine' to find '8766.T'
-    Example: search 'Shin-Etsu' to find '4063.T'
-    Example: search 'Liechtensteinische Landesbank' to find 'LLBN.SW'
     """
-    data = await fmp_get("search", {"query": query, "limit": limit})
-    return json.dumps(data, indent=2)
-
-
-# ---------------------------------------------------------------------------
-# Tool: Screen stocks
-# ---------------------------------------------------------------------------
-@mcp.tool()
-async def screen_stocks(
-    country: str | None = None,
-    sector: str | None = None,
-    industry: str | None = None,
-    exchange: str | None = None,
-    market_cap_more_than: int | None = None,
-    market_cap_less_than: int | None = None,
-    dividend_more_than: float | None = None,
-    dividend_less_than: float | None = None,
-    beta_more_than: float | None = None,
-    beta_less_than: float | None = None,
-    volume_more_than: int | None = None,
-    price_more_than: float | None = None,
-    price_less_than: float | None = None,
-    limit: int = 50,
-) -> str:
-    """Screen stocks by fundamental criteria.
-
-    Sectors: Technology, Healthcare, Financial Services, Consumer Cyclical,
-    Consumer Defensive, Industrials, Energy, Basic Materials, Real Estate,
-    Utilities, Communication Services
-
-    Exchanges: NYSE, NASDAQ, AMEX, EURONEXT, TSX, LSE, XETRA, NSE, SGX,
-    HKEX, JPX, SIX, ASX
-
-    Countries: US, GB, JP, CH, SG, HK, AU, DE, FR, CA, IN (ISO 2-letter)
-
-    Returns list of matching stocks with symbol, name, market cap, sector,
-    industry, beta, price, dividend yield, volume, exchange, country.
-    """
-    params: dict = {"limit": limit}
-
-    if country:
-        params["country"] = country
-    if sector:
-        params["sector"] = sector
-    if industry:
-        params["industry"] = industry
-    if exchange:
-        params["exchange"] = exchange
-    if market_cap_more_than is not None:
-        params["marketCapMoreThan"] = market_cap_more_than
-    if market_cap_less_than is not None:
-        params["marketCapLessThan"] = market_cap_less_than
-    if dividend_more_than is not None:
-        params["dividendMoreThan"] = dividend_more_than
-    if dividend_less_than is not None:
-        params["dividendLessThan"] = dividend_less_than
-    if beta_more_than is not None:
-        params["betaMoreThan"] = beta_more_than
-    if beta_less_than is not None:
-        params["betaLessThan"] = beta_less_than
-    if volume_more_than is not None:
-        params["volumeMoreThan"] = volume_more_than
-    if price_more_than is not None:
-        params["priceMoreThan"] = price_more_than
-    if price_less_than is not None:
-        params["priceLessThan"] = price_less_than
-
-    data = await fmp_get("stock-screener", params)
-    return json.dumps(data, indent=2)
+    try:
+        results = yf.Search(query)
+        quotes = []
+        if hasattr(results, "quotes") and results.quotes:
+            for q in results.quotes[:10]:
+                quotes.append({
+                    "symbol": q.get("symbol", ""),
+                    "name": q.get("shortname", q.get("longname", "")),
+                    "exchange": q.get("exchange", ""),
+                    "type": q.get("quoteType", ""),
+                })
+        return json.dumps(quotes, indent=2)
+    except Exception as e:
+        return json.dumps({"error": f"Search failed: {str(e)}"})
 
 
 # ---------------------------------------------------------------------------
@@ -137,22 +78,65 @@ async def screen_stocks(
 # ---------------------------------------------------------------------------
 @mcp.tool()
 async def get_company_profile(symbol: str) -> str:
-    """Get company profile: description, sector, industry, market cap, CEO,
-    employees, website, country, currency, exchange, and key statistics.
+    """Get company profile and key statistics.
 
-    International ticker examples:
-    - Japan: '8766.T' (Tokio Marine), '4063.T' (Shin-Etsu)
-    - SIX Swiss: 'LLBN.SW' (Liechtensteinische Landesbank)
-    - Singapore: 'D05.SI' (DBS Group)
-    - UK: 'GSK.L' (GSK)
-    - Australia: 'BHP.AX' (BHP)
-    - Germany: 'SAP.DE' (SAP)
-    - France: 'SAN.PA' (Sanofi)
+    Returns sector, industry, country, market cap, employees, description,
+    currency, exchange, dividend yield, PE ratio, beta, 52-week range, and more.
+
+    Use exchange suffixes: .T (Japan), .SW (Swiss), .SI (Singapore),
+    .L (UK), .AX (Australia), .DE (Germany), .PA (France), .HK (Hong Kong)
     """
-    data = await fmp_get(f"profile/{symbol}")
-    if isinstance(data, list) and len(data) > 0:
-        return json.dumps(data[0], indent=2)
-    return json.dumps(data, indent=2)
+    info = ticker_info(symbol)
+    if "error" in info:
+        return json.dumps(info)
+
+    profile = {
+        "symbol": symbol,
+        "name": info.get("longName", ""),
+        "sector": info.get("sector", ""),
+        "industry": info.get("industry", ""),
+        "country": info.get("country", ""),
+        "currency": info.get("currency", ""),
+        "exchange": info.get("exchange", ""),
+        "marketCap": info.get("marketCap"),
+        "employees": info.get("fullTimeEmployees"),
+        "website": info.get("website", ""),
+        "description": info.get("longBusinessSummary", ""),
+        "beta": info.get("beta"),
+        "trailingPE": info.get("trailingPE"),
+        "forwardPE": info.get("forwardPE"),
+        "dividendYield": info.get("dividendYield"),
+        "dividendRate": info.get("dividendRate"),
+        "payoutRatio": info.get("payoutRatio"),
+        "priceToBook": info.get("priceToBook"),
+        "enterpriseValue": info.get("enterpriseValue"),
+        "profitMargins": info.get("profitMargins"),
+        "grossMargins": info.get("grossMargins"),
+        "operatingMargins": info.get("operatingMargins"),
+        "returnOnEquity": info.get("returnOnEquity"),
+        "returnOnAssets": info.get("returnOnAssets"),
+        "debtToEquity": info.get("debtToEquity"),
+        "currentRatio": info.get("currentRatio"),
+        "quickRatio": info.get("quickRatio"),
+        "freeCashflow": info.get("freeCashflow"),
+        "operatingCashflow": info.get("operatingCashflow"),
+        "totalRevenue": info.get("totalRevenue"),
+        "revenueGrowth": info.get("revenueGrowth"),
+        "earningsGrowth": info.get("earningsGrowth"),
+        "targetMeanPrice": info.get("targetMeanPrice"),
+        "recommendationKey": info.get("recommendationKey"),
+        "numberOfAnalystOpinions": info.get("numberOfAnalystOpinions"),
+        "fiftyTwoWeekHigh": info.get("fiftyTwoWeekHigh"),
+        "fiftyTwoWeekLow": info.get("fiftyTwoWeekLow"),
+        "currentPrice": info.get("currentPrice"),
+        "sharesOutstanding": info.get("sharesOutstanding"),
+        "floatShares": info.get("floatShares"),
+        "heldPercentInsiders": info.get("heldPercentInsiders"),
+        "heldPercentInstitutions": info.get("heldPercentInstitutions"),
+        "shortRatio": info.get("shortRatio"),
+        "shortPercentOfFloat": info.get("shortPercentOfFloat"),
+    }
+    return json.dumps(profile, indent=2, default=str)
 
 
 # ---------------------------------------------------------------------------
@@ -160,22 +144,38 @@ async def get_company_profile(symbol: str) -> str:
 # ---------------------------------------------------------------------------
 @mcp.tool()
 async def get_income_statement(
-    symbol: str, period: str = "annual", limit: int = 5
+    symbol: str, period: str = "annual"
 ) -> str:
     """Get income statement data.
 
     Args:
         symbol: Stock ticker (e.g. 'AAPL', '8766.T')
-        period: 'annual' or 'quarter'
-        limit: Number of periods (default 5)
+        period: 'annual' or 'quarterly'
 
-    Returns revenue, cost of revenue, gross profit, operating expenses,
-    operating income, net income, EPS, diluted EPS, EBITDA, and more.
+    Returns revenue, cost of revenue, gross profit, operating income,
+    net income, EPS, EBITDA, and more for the last 4 periods.
     """
-    data = await fmp_get(
-        f"income-statement/{symbol}", {"period": period, "limit": limit}
-    )
-    return json.dumps(data, indent=2)
+    try:
+        t = yf.Ticker(symbol)
+        if period == "quarterly":
+            df = t.quarterly_financials
+        else:
+            df = t.financials
+
+        if df is None or df.empty:
+            return json.dumps({"error": f"No income statement data for {symbol}"})
+
+        result = {}
+        for col in df.columns:
+            period_key = col.strftime("%Y-%m-%d")
+            result[period_key] = {}
+            for idx in df.index:
+                val = df.loc[idx, col]
+                result[period_key][idx] = None if str(val) == "nan" else val
+
+        return json.dumps(result, indent=2, default=str)
+    except Exception as e:
+        return json.dumps({"error": f"Failed: {str(e)}"})
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +183,7 @@ async def get_income_statement(
 # ---------------------------------------------------------------------------
 @mcp.tool()
 async def get_balance_sheet(
-    symbol: str, period: str = "annual", limit: int = 5
+    symbol: str, period: str = "annual"
 ) -> str:
     """Get balance sheet data.
 
@@ -191,10 +191,27 @@ async def get_balance_sheet(
     current liabilities, total debt, total equity, goodwill,
     intangible assets, shares outstanding, and more.
     """
-    data = await fmp_get(
-        f"balance-sheet-statement/{symbol}", {"period": period, "limit": limit}
-    )
-    return json.dumps(data, indent=2)
+    try:
+        t = yf.Ticker(symbol)
+        if period == "quarterly":
+            df = t.quarterly_balance_sheet
+        else:
+            df = t.balance_sheet
+
+        if df is None or df.empty:
+            return json.dumps({"error": f"No balance sheet data for {symbol}"})
+
+        result = {}
+        for col in df.columns:
+            period_key = col.strftime("%Y-%m-%d")
+            result[period_key] = {}
+            for idx in df.index:
+                val = df.loc[idx, col]
+                result[period_key][idx] = None if str(val) == "nan" else val
+
+        return json.dumps(result, indent=2, default=str)
+    except Exception as e:
+        return json.dumps({"error": f"Failed: {str(e)}"})
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +219,7 @@ async def get_balance_sheet(
 # ---------------------------------------------------------------------------
 @mcp.tool()
 async def get_cash_flow(
-    symbol: str, period: str = "annual", limit: int = 5
+    symbol: str, period: str = "annual"
 ) -> str:
     """Get cash flow statement.
 
@@ -210,89 +227,112 @@ async def get_cash_flow(
     dividends paid, share repurchases (buybacks), acquisitions,
     debt repayment, and more.
     """
-    data = await fmp_get(
-        f"cash-flow-statement/{symbol}", {"period": period, "limit": limit}
-    )
-    return json.dumps(data, indent=2)
+    try:
+        t = yf.Ticker(symbol)
+        if period == "quarterly":
+            df = t.quarterly_cashflow
+        else:
+            df = t.cashflow
+
+        if df is None or df.empty:
+            return json.dumps({"error": f"No cash flow data for {symbol}"})
+
+        result = {}
+        for col in df.columns:
+            period_key = col.strftime("%Y-%m-%d")
+            result[period_key] = {}
+            for idx in df.index:
+                val = df.loc[idx, col]
+                result[period_key][idx] = None if str(val) == "nan" else val
+
+        return json.dumps(result, indent=2, default=str)
+    except Exception as e:
+        return json.dumps({"error": f"Failed: {str(e)}"})
 
 
 # ---------------------------------------------------------------------------
-# Tool: Key metrics
-# ---------------------------------------------------------------------------
-@mcp.tool()
-async def get_key_metrics(
-    symbol: str, period: str = "annual", limit: int = 5
-) -> str:
-    """Get key financial metrics.
-
-    Returns ROIC, ROE, ROA, revenue per share, net income per share,
-    operating cash flow per share, free cash flow per share, book value
-    per share, debt to equity, debt to assets, interest coverage,
-    PE ratio, PB ratio, dividend yield, payout ratio, enterprise value,
-    EV/EBITDA, EV/FCF, earnings yield, FCF yield, and more.
-    """
-    data = await fmp_get(
-        f"key-metrics/{symbol}", {"period": period, "limit": limit}
-    )
-    return json.dumps(data, indent=2)
-
-
-# ---------------------------------------------------------------------------
-# Tool: Financial ratios
+# Tool: Key metrics from info
 # ---------------------------------------------------------------------------
 @mcp.tool()
-async def get_financial_ratios(
-    symbol: str, period: str = "annual", limit: int = 5
-) -> str:
-    """Get financial ratios.
+async def get_key_metrics(symbol: str) -> str:
+    """Get key financial metrics and valuation ratios.
 
-    Profitability: gross margin, operating margin, net margin, ROE, ROA, ROIC
-    Liquidity: current ratio, quick ratio, cash ratio
-    Leverage: debt/equity, debt/assets, interest coverage
-    Efficiency: asset turnover, inventory turnover, receivables turnover
-    Valuation: PE, PB, P/S, P/FCF, EV/EBITDA, PEG
-    Dividends: dividend yield, payout ratio, dividend per share
+    Returns PE, forward PE, PEG, P/B, P/S, EV/EBITDA, EV/Revenue,
+    dividend yield, payout ratio, ROE, ROA, profit margins,
+    debt/equity, current ratio, free cash flow, and more.
     """
-    data = await fmp_get(
-        f"ratios/{symbol}", {"period": period, "limit": limit}
-    )
-    return json.dumps(data, indent=2)
+    info = ticker_info(symbol)
+    if "error" in info:
+        return json.dumps(info)
 
-
-# ---------------------------------------------------------------------------
-# Tool: Financial scores (Piotroski, Altman Z)
-# ---------------------------------------------------------------------------
-@mcp.tool()
-async def get_financial_scores(symbol: str) -> str:
-    """Get financial health scores.
-
-    Returns Altman Z-Score and Piotroski F-Score.
-    Altman Z-Score: >2.99 safe, 1.8-2.99 grey zone, <1.8 distress
-    Piotroski F-Score: 7-9 strong, 4-6 moderate, 0-3 weak
-    """
-    data = await fmp_get("score", {"symbol": symbol})
-    return json.dumps(data, indent=2)
-
-
-# ---------------------------------------------------------------------------
-# Tool: Financial growth rates
-# ---------------------------------------------------------------------------
-@mcp.tool()
-async def get_financial_growth(
-    symbol: str, period: str = "annual", limit: int = 5
-) -> str:
-    """Get financial growth rates.
-
-    Returns revenue growth, net income growth, EPS growth, dividend growth,
-    operating cash flow growth, free cash flow growth, gross profit growth,
-    debt growth, shares outstanding growth, and more.
-
-    Useful for checking if dividend growth is outpacing FCF growth.
-    """
-    data = await fmp_get(
-        f"financial-growth/{symbol}", {"period": period, "limit": limit}
-    )
-    return json.dumps(data, indent=2)
+    metrics = {
+        "symbol": symbol,
+        "name": info.get("longName", ""),
+        "currency": info.get("currency", ""),
+        "currentPrice": info.get("currentPrice"),
+        "marketCap": info.get("marketCap"),
+        # Valuation
+        "trailingPE": info.get("trailingPE"),
+        "forwardPE": info.get("forwardPE"),
+        "pegRatio": info.get("pegRatio"),
+        "priceToBook": info.get("priceToBook"),
+        "priceToSalesTrailing12Months": info.get("priceToSalesTrailing12Months"),
+        "enterpriseToRevenue": info.get("enterpriseToRevenue"),
+        "enterpriseToEbitda": info.get("enterpriseToEbitda"),
+        "enterpriseValue": info.get("enterpriseValue"),
+        "trailingEps": info.get("trailingEps"),
+        "forwardEps": info.get("forwardEps"),
+        "earningsYield": round(1 / info["trailingPE"], 4) if info.get("trailingPE") and info["trailingPE"] > 0 else None,
+        # Profitability
+        "grossMargins": info.get("grossMargins"),
+        "operatingMargins": info.get("operatingMargins"),
+        "profitMargins": info.get("profitMargins"),
+        "returnOnEquity": info.get("returnOnEquity"),
+        "returnOnAssets": info.get("returnOnAssets"),
+        # Balance sheet
+        "debtToEquity": info.get("debtToEquity"),
+        "currentRatio": info.get("currentRatio"),
+        "quickRatio": info.get("quickRatio"),
+        "totalDebt": info.get("totalDebt"),
+        "totalCash": info.get("totalCash"),
+        "totalCashPerShare": info.get("totalCashPerShare"),
+        "bookValue": info.get("bookValue"),
+        # Cash flow
+        "freeCashflow": info.get("freeCashflow"),
+        "operatingCashflow": info.get("operatingCashflow"),
+        # Dividends
+        "dividendYield": info.get("dividendYield"),
+        "dividendRate": info.get("dividendRate"),
+        "payoutRatio": info.get("payoutRatio"),
+        "exDividendDate": info.get("exDividendDate"),
+        "lastDividendValue": info.get("lastDividendValue"),
+        "lastDividendDate": info.get("lastDividendDate"),
+        "fiveYearAvgDividendYield": info.get("fiveYearAvgDividendYield"),
+        # Growth
+        "revenueGrowth": info.get("revenueGrowth"),
+        "earningsGrowth": info.get("earningsGrowth"),
+        "earningsQuarterlyGrowth": info.get("earningsQuarterlyGrowth"),
+        "revenueQuarterlyGrowth": info.get("revenueQuarterlyGrowth"),
+        # Revenue
+        "totalRevenue": info.get("totalRevenue"),
+        "revenuePerShare": info.get("revenuePerShare"),
+        # Risk
+        "beta": info.get("beta"),
+        "shortRatio": info.get("shortRatio"),
+        "shortPercentOfFloat": info.get("shortPercentOfFloat"),
+        # Shares
+        "sharesOutstanding": info.get("sharesOutstanding"),
+        "floatShares": info.get("floatShares"),
+        "heldPercentInsiders": info.get("heldPercentInsiders"),
+        "heldPercentInstitutions": info.get("heldPercentInstitutions"),
+        # Analyst
+        "targetMeanPrice": info.get("targetMeanPrice"),
+        "targetHighPrice": info.get("targetHighPrice"),
+        "targetLowPrice": info.get("targetLowPrice"),
+        "recommendationKey": info.get("recommendationKey"),
+        "numberOfAnalystOpinions": info.get("numberOfAnalystOpinions"),
+    }
+    return json.dumps(metrics, indent=2, default=str)
 
 
 # ---------------------------------------------------------------------------
@@ -302,107 +342,239 @@ async def get_financial_growth(
 async def get_dividend_history(symbol: str) -> str:
     """Get historical dividend payments.
 
-    Returns list of dividend payments with declaration date, record date,
-    payment date, and amount. Useful for assessing dividend consistency,
-    growth track record, and identifying any cuts or freezes.
+    Returns list of dividend payments with dates and amounts.
+    Useful for assessing dividend consistency, growth track record,
+    and identifying any cuts or freezes.
     """
-    data = await fmp_get(f"historical-price-full/stock_dividend/{symbol}")
-    return json.dumps(data, indent=2)
+    try:
+        t = yf.Ticker(symbol)
+        divs = t.dividends
+
+        if divs is None or divs.empty:
+            return json.dumps({"symbol": symbol, "dividends": [], "message": "No dividend history found"})
+
+        result = {
+            "symbol": symbol,
+            "dividendCount": len(divs),
+            "dividends": []
+        }
+        for date, amount in divs.items():
+            result["dividends"].append({
+                "date": date.strftime("%Y-%m-%d"),
+                "amount": round(float(amount), 6)
+            })
+
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return json.dumps({"error": f"Failed: {str(e)}"})
 
 
 # ---------------------------------------------------------------------------
-# Tool: Current stock quote
+# Tool: Stock quote
 # ---------------------------------------------------------------------------
 @mcp.tool()
 async def get_stock_quote(symbol: str) -> str:
     """Get current stock quote and key stats.
 
-    Returns current price, change, percent change, volume, avg volume,
-    market cap, PE ratio, EPS, 52-week high/low, dividend yield,
-    shares outstanding, and more.
+    Returns current price, change, volume, market cap, PE, EPS,
+    52-week high/low, dividend yield, and more.
 
-    Accepts multiple comma-separated symbols: 'AAPL,MSFT,GOOGL'
+    For multiple stocks, call this tool once per ticker.
     """
-    data = await fmp_get(f"quote/{symbol}")
-    return json.dumps(data, indent=2)
+    info = ticker_info(symbol)
+    if "error" in info:
+        return json.dumps(info)
+
+    quote = {
+        "symbol": symbol,
+        "name": info.get("longName", ""),
+        "currency": info.get("currency", ""),
+        "currentPrice": info.get("currentPrice"),
+        "previousClose": info.get("previousClose"),
+        "open": info.get("open"),
+        "dayHigh": info.get("dayHigh"),
+        "dayLow": info.get("dayLow"),
+        "volume": info.get("volume"),
+        "averageVolume": info.get("averageVolume"),
+        "marketCap": info.get("marketCap"),
+        "trailingPE": info.get("trailingPE"),
+        "forwardPE": info.get("forwardPE"),
+        "trailingEps": info.get("trailingEps"),
+        "dividendYield": info.get("dividendYield"),
+        "fiftyTwoWeekHigh": info.get("fiftyTwoWeekHigh"),
+        "fiftyTwoWeekLow": info.get("fiftyTwoWeekLow"),
+        "fiftyDayAverage": info.get("fiftyDayAverage"),
+        "twoHundredDayAverage": info.get("twoHundredDayAverage"),
+        "sharesOutstanding": info.get("sharesOutstanding"),
+    }
+    return json.dumps(quote, indent=2, default=str)
 
 
 # ---------------------------------------------------------------------------
-# Tool: Peer companies
+# Tool: Holders / ownership
 # ---------------------------------------------------------------------------
 @mcp.tool()
-async def get_stock_peers(symbol: str) -> str:
-    """Get peer/comparable companies.
+async def get_holders(symbol: str) -> str:
+    """Get major holders and institutional ownership data.
 
-    Returns list of ticker symbols in the same sector/industry.
-    Useful for finding comparables for valuation analysis.
+    Returns top institutional holders, top mutual fund holders,
+    and insider/institutional ownership percentages.
     """
-    data = await fmp_get("stock_peers", {"symbol": symbol})
-    return json.dumps(data, indent=2)
+    try:
+        t = yf.Ticker(symbol)
+        result = {"symbol": symbol}
+
+        # Major holders summary
+        mh = t.major_holders
+        if mh is not None and not mh.empty:
+            result["majorHolders"] = {}
+            for _, row in mh.iterrows():
+                result["majorHolders"][str(row.iloc[1])] = str(row.iloc[0])
+
+        # Top institutional holders
+        ih = t.institutional_holders
+        if ih is not None and not ih.empty:
+            result["topInstitutionalHolders"] = ih.head(10).to_dict(orient="records")
+
+        # Top mutual fund holders
+        mfh = t.mutualfund_holders
+        if mfh is not None and not mfh.empty:
+            result["topMutualFundHolders"] = mfh.head(10).to_dict(orient="records")
+
+        return json.dumps(result, indent=2, default=str)
+    except Exception as e:
+        return json.dumps({"error": f"Failed: {str(e)}"})
 
 
 # ---------------------------------------------------------------------------
-# Tool: Analyst estimates
+# Tool: Analyst recommendations
 # ---------------------------------------------------------------------------
 @mcp.tool()
-async def get_analyst_estimates(
-    symbol: str, period: str = "annual", limit: int = 5
+async def get_analyst_recommendations(symbol: str) -> str:
+    """Get analyst recommendations and price targets.
+
+    Returns recent analyst ratings (buy/hold/sell),
+    price target data, and recommendation trends.
+    """
+    try:
+        t = yf.Ticker(symbol)
+        result = {"symbol": symbol}
+
+        # Recommendations
+        recs = t.recommendations
+        if recs is not None and not recs.empty:
+            recent = recs.tail(20)
+            result["recommendations"] = recent.to_dict(orient="records")
+
+        # Info-based targets
+        info = t.info
+        if info:
+            result["targetMeanPrice"] = info.get("targetMeanPrice")
+            result["targetHighPrice"] = info.get("targetHighPrice")
+            result["targetLowPrice"] = info.get("targetLowPrice")
+            result["recommendationKey"] = info.get("recommendationKey")
+            result["numberOfAnalystOpinions"] = info.get("numberOfAnalystOpinions")
+
+        return json.dumps(result, indent=2, default=str)
+    except Exception as e:
+        return json.dumps({"error": f"Failed: {str(e)}"})
+
+
+# ---------------------------------------------------------------------------
+# Tool: Price history
+# ---------------------------------------------------------------------------
+@mcp.tool()
+async def get_price_history(
+    symbol: str, period: str = "1y", interval: str = "1mo"
 ) -> str:
-    """Get analyst consensus estimates.
+    """Get historical price data.
 
-    Returns estimated revenue, EPS, EBITDA, net income, SGA expense
-    with high/low/average/number of analysts for each metric.
+    Args:
+        symbol: Stock ticker
+        period: '1mo', '3mo', '6mo', '1y', '2y', '5y', '10y', 'max'
+        interval: '1d', '1wk', '1mo'
+
+    Returns OHLCV data (open, high, low, close, volume) for each period.
     """
-    data = await fmp_get(
-        f"analyst-estimates/{symbol}", {"period": period, "limit": limit}
-    )
-    return json.dumps(data, indent=2)
+    try:
+        t = yf.Ticker(symbol)
+        hist = t.history(period=period, interval=interval)
+
+        if hist is None or hist.empty:
+            return json.dumps({"error": f"No price history for {symbol}"})
+
+        result = {
+            "symbol": symbol,
+            "period": period,
+            "interval": interval,
+            "dataPoints": len(hist),
+            "prices": []
+        }
+        for date, row in hist.iterrows():
+            result["prices"].append({
+                "date": date.strftime("%Y-%m-%d"),
+                "open": round(float(row["Open"]), 4),
+                "high": round(float(row["High"]), 4),
+                "low": round(float(row["Low"]), 4),
+                "close": round(float(row["Close"]), 4),
+                "volume": int(row["Volume"]),
+            })
+
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return json.dumps({"error": f"Failed: {str(e)}"})
 
 
 # ---------------------------------------------------------------------------
-# Tool: Enterprise value
+# Tool: Compare multiple stocks
 # ---------------------------------------------------------------------------
 @mcp.tool()
-async def get_enterprise_value(
-    symbol: str, period: str = "annual", limit: int = 5
-) -> str:
-    """Get enterprise value breakdown.
+async def compare_stocks(symbols: str) -> str:
+    """Compare key metrics across multiple stocks.
 
-    Returns market cap, total debt, cash and equivalents, minority interest,
-    preferred stock, enterprise value, shares outstanding, and stock price.
+    Args:
+        symbols: Comma-separated ticker symbols, e.g. '8766.T,4063.T,8001.T'
+
+    Returns a side-by-side comparison of PE, dividend yield, ROE, margins,
+    debt/equity, beta, market cap, and more for each stock.
     """
-    data = await fmp_get(
-        f"enterprise-values/{symbol}", {"period": period, "limit": limit}
-    )
-    return json.dumps(data, indent=2)
+    tickers = [s.strip() for s in symbols.split(",")]
+    results = []
 
+    for sym in tickers[:10]:  # Max 10 stocks
+        info = ticker_info(sym)
+        if "error" in info:
+            results.append({"symbol": sym, "error": info["error"]})
+            continue
 
-# ---------------------------------------------------------------------------
-# Tool: Shares float
-# ---------------------------------------------------------------------------
-@mcp.tool()
-async def get_shares_float(symbol: str) -> str:
-    """Get shares float and outstanding data.
+        results.append({
+            "symbol": sym,
+            "name": info.get("longName", ""),
+            "currency": info.get("currency", ""),
+            "currentPrice": info.get("currentPrice"),
+            "marketCap": info.get("marketCap"),
+            "trailingPE": info.get("trailingPE"),
+            "forwardPE": info.get("forwardPE"),
+            "priceToBook": info.get("priceToBook"),
+            "enterpriseToEbitda": info.get("enterpriseToEbitda"),
+            "dividendYield": info.get("dividendYield"),
+            "payoutRatio": info.get("payoutRatio"),
+            "grossMargins": info.get("grossMargins"),
+            "operatingMargins": info.get("operatingMargins"),
+            "profitMargins": info.get("profitMargins"),
+            "returnOnEquity": info.get("returnOnEquity"),
+            "returnOnAssets": info.get("returnOnAssets"),
+            "debtToEquity": info.get("debtToEquity"),
+            "currentRatio": info.get("currentRatio"),
+            "freeCashflow": info.get("freeCashflow"),
+            "operatingCashflow": info.get("operatingCashflow"),
+            "revenueGrowth": info.get("revenueGrowth"),
+            "earningsGrowth": info.get("earningsGrowth"),
+            "beta": info.get("beta"),
+            "sharesOutstanding": info.get("sharesOutstanding"),
+        })
 
-    Returns free float, float shares, outstanding shares.
-    Useful for checking share dilution trends over time.
-    """
-    data = await fmp_get("shares_float", {"symbol": symbol})
-    return json.dumps(data, indent=2)
-
-
-# ---------------------------------------------------------------------------
-# Tool: Rating
-# ---------------------------------------------------------------------------
-@mcp.tool()
-async def get_company_rating(symbol: str) -> str:
-    """Get company rating based on financial indicators.
-
-    Returns overall rating and individual scores for DCF, ROE, ROA,
-    DE (debt/equity), PE, and PB ratios. Each scored as S/A/B/C/D.
-    """
-    data = await fmp_get(f"rating/{symbol}")
-    return json.dumps(data, indent=2)
+    return json.dumps(results, indent=2, default=str)
 
 
 # ---------------------------------------------------------------------------
