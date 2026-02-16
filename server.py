@@ -6,6 +6,8 @@ from mcp.server.fastmcp import FastMCP
 # Initialize MCP server
 mcp = FastMCP(
     "FMP Stock Data",
+    host="0.0.0.0",
+    port=int(os.environ.get("PORT", 8000)),
     instructions=(
         "Financial data tools powered by Financial Modeling Prep. "
         "Use these tools to screen stocks, get financial statements, key metrics, "
@@ -407,9 +409,4 @@ async def get_company_rating(symbol: str) -> str:
 # Run the server
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    mcp.run(
-        transport="streamable-http",
-        host="0.0.0.0",
-        port=port,
-    )
+    mcp.run(transport="streamable-http")
